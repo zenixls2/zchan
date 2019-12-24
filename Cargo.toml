@@ -1,0 +1,12 @@
+[package]
+name = "zchan"
+version = "0.1.0"
+authors = ["zenix <zenixls2@gmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+tokio = "0.1.22"
+crossbeam = "0.7.3"
+futures = "0.1.29"
