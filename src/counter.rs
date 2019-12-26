@@ -44,7 +44,7 @@ impl<C: Shutdown> Sender<C> {
         unsafe { &*self.counter }
     }
 
-    fn counter_mut(&self) -> &mut Counter<C> {
+    fn counter_mut(&mut self) -> &mut Counter<C> {
         unsafe { &mut *self.counter }
     }
 
@@ -139,7 +139,7 @@ impl<C: Shutdown> Receiver<C> {
         unsafe { &*self.counter }
     }
 
-    fn counter_mut(&self) -> &mut Counter<C> {
+    fn counter_mut(&mut self) -> &mut Counter<C> {
         unsafe { &mut *self.counter }
     }
 
@@ -150,7 +150,7 @@ impl<C: Shutdown> Receiver<C> {
         // Cloning receivers and calling `mem::forget` one the clones could potentially overflow the
         // counter. It's very difficult to recover sensibly from such degenerate scenarios so we
         // just abort when the counter becomes very large.
-        if counter >= usize::MAX {
+        if counter == usize::MAX {
             process::abort();
         }
         Receiver {

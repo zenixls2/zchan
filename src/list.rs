@@ -174,16 +174,6 @@ impl<T> Channel<T> {
         }
     }
 
-    /// Returns a receiver handle to channel
-    pub fn receiver(&self) -> UnboundedReceiver<T> {
-        UnboundedReceiver(self)
-    }
-
-    /// Returns a sender handle to the channel
-    pub fn sender(&self) -> UnboundedSender<T> {
-        UnboundedSender(self)
-    }
-
     /// Attempts to reserve a slot for sending a message.
     pub fn start_send(&self, list: &mut List) -> bool {
         let mut tail = self.tail.index.load_consume();
@@ -232,7 +222,8 @@ impl<T> Channel<T> {
 
             // Try advancing the tail forward
             match self
-                .tail.index
+                .tail
+                .index
                 .compare_exchange_weak(tail, new_tail, SeqCst, Acquire)
             {
                 Ok(_) => unsafe {
@@ -256,6 +247,7 @@ impl<T> Channel<T> {
     }
 
     /// Writes a message into the channel.
+    #[allow(clippy::missing_safety_doc)]
     pub unsafe fn write(&self, list: &mut List, msg: T) -> Result<(), T> {
         // If there is no slot, the channel is disconnected.
         if list.block.is_null() {
@@ -323,7 +315,8 @@ impl<T> Channel<T> {
 
             // Try moving the head index forward.
             match self
-                .head.index
+                .head
+                .index
                 .compare_exchange_weak(head, new_head, SeqCst, Acquire)
             {
                 Ok(_) => unsafe {
@@ -371,6 +364,7 @@ impl<T> Channel<T> {
     }
 
     /// Reads a message from the channel.
+    #[allow(clippy::missing_safety_doc)]
     pub unsafe fn read(&self, list: &mut List) -> Result<T, ()> {
         if list.block.is_null() {
             // The channel is disconnected.
@@ -495,6 +489,12 @@ impl<T> Shutdown for Channel<T> {
     }
 }
 
+impl<T> Default for Channel<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<T> Drop for Channel<T> {
     fn drop(&mut self) {
         let mut head = self.head.index.load_consume();
@@ -530,9 +530,6 @@ impl<T> Drop for Channel<T> {
     }
 }
 
-/// Receiver handle to a channel
-pub struct UnboundedReceiver<'a, T: 'a>(&'a Channel<T>);
-
 impl<T> Stream for Channel<T> {
     type Item = T;
     type Error = ();
@@ -540,31 +537,26 @@ impl<T> Stream for Channel<T> {
         let list = &mut List::default();
         if self.start_recv(list) {
             unsafe { self.poll_read(list) }
-        } else {
-            if self.first {
-                self.first = false;
-                self.receivers.register();
-                if self.start_recv(list) {
-                    unsafe { self.poll_read(list) }
-                } else {
-                    Ok(Async::NotReady)
-                }
-            } else if positive_update(&self.from_me) {
-                self.receivers.register();
-                if self.start_recv(list) {
-                    unsafe { self.poll_read(list) }
-                } else {
-                    Ok(Async::NotReady)
-                }
+        } else if self.first {
+            self.first = false;
+            self.receivers.register();
+            if self.start_recv(list) {
+                unsafe { self.poll_read(list) }
             } else {
                 Ok(Async::NotReady)
             }
+        } else if positive_update(&self.from_me) {
+            self.receivers.register();
+            if self.start_recv(list) {
+                unsafe { self.poll_read(list) }
+            } else {
+                Ok(Async::NotReady)
+            }
+        } else {
+            Ok(Async::NotReady)
         }
     }
 }
-
-/// Sender handle to a channel
-pub struct UnboundedSender<'a, T: 'a>(&'a Channel<T>);
 
 impl<T> Sink for Channel<T> {
     type SinkItem = T;

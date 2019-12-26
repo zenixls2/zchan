@@ -1,17 +1,17 @@
 use crate::atomic_serial_waker::*;
 use crate::error::*;
 use crate::Shutdown;
+use crossbeam::atomic::AtomicConsume;
+use crossbeam::utils::CachePadded;
 use std::cell::UnsafeCell;
 use std::marker::PhantomData;
 use std::mem;
 use std::ptr;
-use std::sync::Arc;
-use tokio::prelude::*;
-use std::sync::mpsc::TryRecvError;
 use std::sync::atomic::{self, AtomicUsize, Ordering::*};
-use crossbeam::atomic::AtomicConsume;
-use crossbeam::utils::CachePadded;
+use std::sync::mpsc::TryRecvError;
+use std::sync::Arc;
 use std::time::Instant;
+use tokio::prelude::*;
 
 /// A slot in a channel.
 struct Slot<T> {
@@ -21,7 +21,6 @@ struct Slot<T> {
     /// The message in this slot
     msg: UnsafeCell<T>,
 }
-
 
 /// The token type for the array
 #[derive(Debug)]
@@ -44,14 +43,14 @@ impl Default for Array {
 }
 
 struct Ptr<T> {
-    p: UnsafeCell<*mut T>
+    p: UnsafeCell<*mut T>,
 }
 
 impl<T> Ptr<T> {
     #[inline]
-    pub fn new(t :*mut T) -> Self {
+    pub fn new(t: *mut T) -> Self {
         Self {
-            p: UnsafeCell::new(t)
+            p: UnsafeCell::new(t),
         }
     }
     #[inline]
@@ -103,6 +102,7 @@ pub struct Channel<T> {
 
     from_me: Arc<AtomicUsize>,
 
+    #[allow(dead_code)]
     to_me: Arc<AtomicUsize>,
 
     first: bool,
@@ -161,16 +161,6 @@ impl<T> Channel<T> {
         }
     }
 
-    /// Returns a receiver handle to the channel
-    pub fn receiver(&self) -> Receiver<T> {
-        Receiver(self)
-    }
-
-    /// Returns a sender handl to the channel
-    pub fn sender(&self) -> Sender<T> {
-        Sender(self)
-    }
-
     /// Attempts to reserve a slot for sending a message.
     fn start_send(&self, array: &mut Array) -> bool {
         let mut tail = self.tail.load_consume();
@@ -202,12 +192,10 @@ impl<T> Channel<T> {
                 };
 
                 // Try moving the tail.
-                match self.tail.compare_exchange_weak(
-                    tail,
-                    new_tail,
-                    SeqCst,
-                    Relaxed,
-                ) {
+                match self
+                    .tail
+                    .compare_exchange_weak(tail, new_tail, SeqCst, Relaxed)
+                {
                     Ok(_) => {
                         // Prepare the token for the follow-up call to `write`.
                         array.slot = slot as *const Slot<T> as *const u8;
@@ -235,6 +223,7 @@ impl<T> Channel<T> {
     }
 
     /// Writes a message into the channel.
+    #[allow(clippy::missing_safety_doc)]
     pub unsafe fn write(&self, array: &mut Array, msg: T) -> Result<(), T> {
         // If there is no slot, the channel is disconnected.
         if array.slot.is_null() {
@@ -258,7 +247,7 @@ impl<T> Channel<T> {
 
         loop {
             // Deconstruct the head.
-            let index = head & ( self.mark_bit - 1);
+            let index = head & (self.mark_bit - 1);
             let lap = head & !(self.one_lap - 1);
 
             // Inspect the corresponding slot.
@@ -277,12 +266,7 @@ impl<T> Channel<T> {
                 };
 
                 // Try moving the head.
-                match self.head.compare_exchange_weak(
-                    head,
-                    new,
-                    SeqCst,
-                    Relaxed,
-                ) {
+                match self.head.compare_exchange_weak(head, new, SeqCst, Relaxed) {
                     Ok(_) => {
                         // Prepare the token for the follow-up call to `read`.
                         array.slot = slot as *const Slot<T> as *const u8;
@@ -332,10 +316,11 @@ impl<T> Channel<T> {
     }
 
     /// Reads a message from the channel.
+    #[allow(clippy::missing_safety_doc)]
     pub unsafe fn read(&self, array: &mut Array) -> Result<T, ()> {
         if array.slot.is_null() {
             // The channel is disconnected.
-            return Err(())
+            return Err(());
         }
 
         let slot: &Slot<T> = &*(array.slot as *const Slot<T>);
@@ -353,12 +338,12 @@ impl<T> Channel<T> {
     pub fn try_send(&self, msg: T) -> Result<(), TrySendError<T>> {
         let array = &mut Array::default();
         if self.start_send(array) {
-            unsafe { self.write(array, msg).map_err(|msg| {
-                TrySendError {
+            unsafe {
+                self.write(array, msg).map_err(|msg| TrySendError {
                     kind: ErrorKind::Closed,
                     value: msg,
-                }
-            })}
+                })
+            }
         } else {
             self.senders.register();
             Err(TrySendError {
@@ -426,6 +411,17 @@ impl<T> Channel<T> {
         Some(self.cap)
     }
 
+    pub fn is_empty(&self) -> bool {
+        let head = self.head.load_consume();
+        let tail = self.tail.load_consume();
+
+        // Is the tail equal to the head?
+        //
+        // Note: If the head changes just before we load the tail, that means there was a moment
+        // when the channel was not empty, so it is safe to just return `false`.
+        (tail & self.mark_bit) == head
+    }
+
     /// Returns `true` if the channel is full.
     pub fn is_full(&self) -> bool {
         let tail = self.tail.load_consume();
@@ -482,9 +478,6 @@ impl<T> Drop for Channel<T> {
     }
 }
 
-/// Receiver handle to a channel.
-pub struct Receiver<'a, T: 'a>(&'a Channel<T>);
-
 impl<T> Stream for Channel<T> {
     type Item = T;
     type Error = ();
@@ -493,32 +486,27 @@ impl<T> Stream for Channel<T> {
         unsafe {
             if self.start_recv(array) {
                 self.poll_read(array)
-            } else {
-                if self.first {
-                    self.first = false;
-                    self.receivers.register();
-                    if self.start_recv(array) {
-                        self.poll_read(array)
-                    } else {
-                        Ok(Async::NotReady)
-                    }
-                } else if positive_update(&self.from_me) {
-                    self.receivers.register();
-                    if self.start_recv(array) {
-                        self.poll_read(array)
-                    } else {
-                        Ok(Async::NotReady)
-                    }
+            } else if self.first {
+                self.first = false;
+                self.receivers.register();
+                if self.start_recv(array) {
+                    self.poll_read(array)
                 } else {
                     Ok(Async::NotReady)
                 }
+            } else if positive_update(&self.from_me) {
+                self.receivers.register();
+                if self.start_recv(array) {
+                    self.poll_read(array)
+                } else {
+                    Ok(Async::NotReady)
+                }
+            } else {
+                Ok(Async::NotReady)
             }
         }
     }
 }
-
-/// Sender handle to a channel,
-pub struct Sender<'a, T: 'a>(&'a Channel<T>);
 
 impl<T> Sink for Channel<T> {
     type SinkItem = T;

@@ -16,6 +16,11 @@ zchan:         121ns/iter, total 24294765ns
 tokio-channel: 388ns/iter, total 77659237ns
 ```
 
+### Transfering 200,000 i32 numbers using zero-capacity channel
+```
+zchan:         749ns/iter, total 149971960ns
+```
+
 to run the benchmark, you need to turn on the `nocapture` to see the messages.  
 
 ### Features:
