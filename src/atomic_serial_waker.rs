@@ -27,6 +27,12 @@ pub struct AtomicSerialWaker {
     pub(crate) from_me: Arc<AtomicUsize>,
 }
 
+impl Default for AtomicSerialWaker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AtomicSerialWaker {
     pub fn new() -> Self {
         trait AssertSync: Sync {}
